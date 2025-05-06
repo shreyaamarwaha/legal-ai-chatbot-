@@ -1,82 +1,70 @@
+# main.py
 import streamlit as st
-import openai
-import json
+from transformers import pipeline
+from docx import Document
+import pdfplumber
+from io import BytesIO
 
-# Set your OpenAI API key here
-openai.api_key = "YOUR_OPENAI_API_KEY"
+# Load the QA model from your notebook
+qa_pipeline = pipeline("question-answering", model="deepset/roberta-base-squad2")
 
-# Streamlit app layout
-st.title("Legal Document Analyzer")
+# Sidebar setup
+st.sidebar.title("🔐 Setup")
+st.sidebar.success("Model loaded locally. No token needed ✅")
 
+# App title and description
+st.title("🧑‍⚖ Legal Document Chatbot")
+st.markdown("""
+Upload a legal document and interact with an AI-powered legal assistant.
+Ask about risky clauses, obligations, or any part of the document.
+""")
 
-def get_completion(prompt, model="gpt-3.5-turbo"):
-    messages = [{"role": "system",
-                 "content": "You are an expert and helpful legal advisor that detects the risky and safe clauses from a legal document"},
-                {"role": "user", "content": prompt}]
-    response = openai.ChatCompletion.create(
-        model=model,
-        messages=messages,
-        temperature=0,  # this is the degree of randomness of the model's output
-    )
-    return response.choices[0].message["content"]
+# File uploader
+uploaded_file = st.file_uploader("📄 Upload Legal Document", type=["pdf", "docx", "txt"])
 
-
-# File upload section
-uploaded_file = st.file_uploader("Upload a legal document", type=["pdf", "docx", "txt"])
-
-if uploaded_file:
-    document_text = uploaded_file.read()
-    st.subheader("Uploaded Document Preview")
-    st.text(document_text)
-
-    prompt = f"""
-        You are an expert legal advisor with an experience of more than a decade. \
-        Analyze the following Legal Document delimited by triple backticks \
-        provide a JSON Object response \
-        mentioning the following: \
-        1. Risky Clauses \
-        2. Partial Risky Clauses \
-        3. Safe Clauses \
-        
-        JSON object structure \
-        {{
-            "Risky Clauses": [],
-            "Partial Risky Clauses": [],
-            "Safe Clauses": []
-        }}
-
-        Legal Document:
-        ```
-        {document_text}
-        ```
-    """
-
-    analysis = get_completion(prompt)
-
-    # Analyze the document using the OpenAI API
-    st.subheader("Analysis Results")
-
-    # Parse the JSON response from the model into a Python dictionary
+# Helper to extract text from supported files
+def extract_text(file):
     try:
-        analysis_dict = json.loads(analysis)
-    except json.JSONDecodeError:
-        st.error("Error parsing JSON response.")
-        analysis_dict = {}
+        if file.type == "application/pdf":
+            with pdfplumber.open(BytesIO(file.read())) as pdf:
+                return "\n".join([page.extract_text() for page in pdf.pages if page.extract_text()])
+        elif file.type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+            doc = Document(BytesIO(file.read()))
+            return "\n".join([para.text for para in doc.paragraphs])
+        else:
+            return file.read().decode("utf-8", errors="ignore")
+    except Exception as e:
+        st.error(f"❌ Failed to extract text: {e}")
+        return ""
 
-    # Extract and display Risky, Partial Risky, and Safe clauses
-    risky_clauses = analysis_dict.get("Risky Clauses", [])
-    partial_risky_clauses = analysis_dict.get("Partial Risky Clauses", [])
-    safe_clauses = analysis_dict.get("Safe Clauses", [])
+# Chat state memory
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
 
-    st.subheader("Risky Clauses")
-    for clause in risky_clauses:
-        st.markdown(f"- {clause}")
+# Core logic
+if uploaded_file:
+    document_text = extract_text(uploaded_file)
 
-    st.subheader("Partial Risky Clauses")
-    for clause in partial_risky_clauses:
-        st.markdown(f"- {clause}")
+    if document_text:
+        st.success("✅ Document processed successfully.")
+        st.subheader("💬 Ask a question about the document")
 
-    st.subheader("Safe Clauses")
-    for clause in safe_clauses:
-        st.markdown(f"- {clause}")
+        user_query = st.text_input("Your question:", placeholder="e.g. What are the risky clauses?")
 
+        if user_query:
+            with st.spinner("Analyzing document..."):
+                result = qa_pipeline({
+                    "context": document_text,
+                    "question": user_query
+                })
+                answer = result.get("answer", "⚠ No answer found.")
+                st.session_state.chat_history.append(("You", user_query))
+                st.session_state.chat_history.append(("AI", answer.strip()))
+
+        # Display chat history
+        for sender, msg in st.session_state.chat_history:
+            st.markdown(f"**{sender}:** {msg}")
+    else:
+        st.warning("⚠ No text extracted from the document.")
+else:
+    st.info("📄 Upload a document to begin chatting.")
